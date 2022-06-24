@@ -7,6 +7,9 @@ import (
 	"strings"
 )
 
+const openGroupConditionDelimetr = "{{"
+const closeGroupConditionDelimetr = "}}"
+
 type QueryBuilder struct {
 	TableName string
 
@@ -46,6 +49,30 @@ func (q QueryBuilder) OrWhere(query string) *QueryBuilder {
 func (q QueryBuilder) AndWhere(query string) *QueryBuilder {
 	clone := q
 	clone.query = append(clone.query, "AND "+query)
+
+	return &clone
+}
+
+func (q QueryBuilder) StartGroupCondition() *QueryBuilder {
+	clone := q
+
+	if len(clone.query) == 0 {
+		clone.query = append(clone.query, openGroupConditionDelimetr)
+	} else {
+		clone.query[len(clone.query)-1] = clone.query[len(clone.query)-1] + openGroupConditionDelimetr
+	}
+
+	return &clone
+}
+
+func (q QueryBuilder) EndGroupCondition() *QueryBuilder {
+	clone := q
+
+	if len(clone.query) == 0 {
+		clone.query = append(clone.query, closeGroupConditionDelimetr)
+	} else {
+		clone.query[len(clone.query)-1] = clone.query[len(clone.query)-1] + closeGroupConditionDelimetr
+	}
 
 	return &clone
 }
@@ -158,14 +185,42 @@ func (q *QueryBuilder) buildQuery() string {
 		q.params[":offset"] = 0
 	}
 
-	if len(q.query) > 0 {
-		replacer := strings.NewReplacer("OR", "WHERE", "AND", "WHERE")
-		q.query[0] = replacer.Replace(q.query[0])
+	// Converting and prepare Group condition query...
+	var hasPrevGroupCondition bool
+	for i := range q.query {
+		q.query[i] = strings.ReplaceAll(q.query[i], openGroupConditionDelimetr+closeGroupConditionDelimetr, "")
+
+		if hasPrevGroupCondition {
+			// Append condition operator before condition group
+			reg := regexp.MustCompile(`^(OR NOT|OR|AND|WHERE)\s`)
+
+			found := reg.FindString(q.query[i])
+			q.query[i] = strings.Replace(q.query[i], found, found+"(", 1)
+			hasPrevGroupCondition = false
+		}
+
+		if strings.Contains(q.query[i], openGroupConditionDelimetr) {
+			// Remove point of support for search...
+			q.query[i] = strings.Replace(q.query[i], openGroupConditionDelimetr, "", 1)
+			hasPrevGroupCondition = true
+		}
+
+		q.query[i] = strings.ReplaceAll(q.query[i], closeGroupConditionDelimetr, ")")
 	}
 
+	// Replace WHERE if > 1 query
+	where := strings.Join(q.query, " ")
+	if len(q.query) > 0 && !strings.Contains(where, "WHERE") {
+		reg := regexp.MustCompile(`(OR NOT|OR|AND)`)
+
+		found := reg.FindString(where)
+		where = strings.Replace(where, found, "WHERE", 1)
+	}
+
+	// Join string query result
 	q.resultQuery = q.querySelect + " " + // SELECT
 		"FROM " + strings.ToLower(q.TableName) + " " + // FROM
-		strings.Join(q.query, " ") + " " + // WHERE
+		where + " " + // WHERE
 		q.order + " " + // ORDER BY
 		q.limit + " " + // LIMIT
 		q.offset + // OFFSET
